@@ -1,0 +1,103 @@
+controller:
+  type: mpc   # preview 或 mpc
+
+basic:
+  T: 0.05
+  ts: 0.05
+
+dimension:
+  NumOutputs: 14
+  NumInputs: 9
+  NumDiscStates: 11
+  Nx: 4
+  Nu: 2
+  Np: 11
+  Nc: 4
+
+reference:
+  u_r: 5.0
+
+constraint:
+  Delta_InputMax: 5.4
+  ub_temp: 17.7
+  lb_temp: -17.7
+
+vehicle:
+  L: 1.2
+  Rmax: 8.0
+  m: 325.0
+  b: 0.557
+  Iz: 75.0
+  wheel_radius: 0.292
+
+learning:
+  useDisturbance: true
+  useMatrixLearning: true  
+  UsingABlearning: true  # 此处为true  就是利用u 学  u对于的 A B矩阵元素   用r学  r对于的A B 矩阵元素
+  UsingYawRate: false  # UsingYawRate false 且  UsingABlearning false 则是利用u的单通道  学所有元素  、、  UsingYawRate true 且  UsingABlearning false  则是利用U单通道学 所有元素   r更新线性元素
+  UsingFulllearning: false # true直接硬学两个2行2列矩阵
+  Ar_nom: 0.863
+  Au_nom: 0.5923
+  Bu_nom: [[0.0445, 0.0445]]
+  Br_nom: [[-0.0537, 0.0537]]
+  Nm: 7
+  Nd: 5
+  # epsilon_u_l: 0.16
+  # epsilon_r_l: 0.5
+  # epsilon_uAB_l: 0.16
+  # epsilon_rAB_l: 0.5
+  # speed_threshold: 2.4
+  # yaw_rate_threshold: 0.0792  这些是只跟新矩阵学习
+  epsilon_u_l: 0.16
+  epsilon_r_l: 0.5
+  epsilon_uAB_l: 0.10
+  epsilon_rAB_l: 0.5
+  epsilon_AB_l: 0.2
+  speed_threshold: 2.4
+  yaw_rate_threshold: 0.0792
+  usingTrigger: true
+disturbance:
+  L_n: 0.2
+  e: 0.0
+  sample_size: 5
+
+path:
+  type: double_lane_change
+  origin_utm_x: 426276.1782064089
+  origin_utm_y: 4454092.170367943
+  origin_heading_rad: 0
+  v_ref: 5.0
+  dX: 0.5
+  X_start: 0.05
+  X_end: 520.0
+  shape: 2.4
+  dx1: 25.0
+  dx2: 21.95
+  dy1: 4.05
+  dy2: 5.7
+  Xs1: 55.0
+  Xs2: 110.0
+
+weight:
+  Q_diag: [45400.0, 97800.0, 100.0, 1000.0]
+  R_diag: [10.0, 10.0]
+
+debug:
+  print_init_matrix: true
+
+# QP-MPC 参数。controller.type: mpc 时使用。
+# MPC 状态量为 [lateral_error, heading_error, speed, yaw_rate]。
+mpc:
+  Np: 11
+  Nc: 4
+  Q_diag: [45400.0, 97800.0, 100.0, 1000.0]
+  R_diag: [10.0, 10.0]
+  solver: OSQP
+  warm_start: false
+  verbose: false
+  eps_abs: 1.0e-6
+  eps_rel: 1.0e-6
+  max_iter: 10000
+  polish: true
+  adaptive_rho: false
+  qp_regularization: 1.0e-5

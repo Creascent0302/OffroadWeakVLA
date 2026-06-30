@@ -1,0 +1,141 @@
+controller:
+  type: preview   # preview 或 mpc
+
+basic:
+  T: 0.05
+  ts: 0.05
+
+dimension:
+  NumOutputs: 14
+  NumInputs: 9
+  NumDiscStates: 11
+  Nx: 4
+  Nu: 2
+  Np: 40
+  Nc: 4
+
+
+
+constraint:
+  Delta_InputMax: 0.4
+  ub_temp: 8.5
+  lb_temp: 3.5
+vehicle:
+  L: 1.2
+  Rmax: 8.0
+  m: 325.0
+  b: 0.557
+  Iz: 75.0
+  wheel_radius: 0.58
+
+learning:
+  useDisturbance: true
+  useMatrixLearning: true  
+  UsingABlearning: false  # 此处为true  就是利用u 学  u对于的 A B矩阵元素   用r学  r对于的A B 矩阵元素
+  UsingYawRate: false  # UsingYawRate false 且  UsingABlearning false 则是利用u的单通道  学所有元素  、、  UsingYawRate true 且  UsingABlearning false  则是利用U单通道学 所有元素   r更新线性元素
+  UsingFulllearning: false # true直接硬学两个2行2列矩阵
+  Ar_nom: 0.863
+  Au_nom: 0.5923
+  Bu_nom: [[0.0445, 0.0445]]
+  Br_nom: [[-0.0537, 0.0537]]
+  Nm: 7
+  Nd: 5
+  # epsilon_u_l: 0.16
+  # epsilon_r_l: 0.5
+  # epsilon_uAB_l: 0.16
+  # epsilon_rAB_l: 0.5
+  # speed_threshold: 2.4
+  # yaw_rate_threshold: 0.0792  这些是只跟新矩阵学习
+  epsilon_u_l: 0.19
+  epsilon_r_l: 0.5
+  epsilon_uAB_l: 0.10
+  epsilon_rAB_l: 0.5
+  epsilon_AB_l: 0.2
+  speed_threshold: 2.4
+  yaw_rate_threshold: 0.0792
+  usingTrigger: true
+  using_preview: false
+disturbance:
+  L_n: 0.2
+  e: 0.0
+  sample_size: 5
+
+path:
+  # Choose: straight_circle, sine, or double_lane_change
+  type: straight_circle
+
+  # Fixed global UTM pose corresponding to local path pose (0, 0, 0).
+  # Replace these three values with VehicleState.x/y/heading measured
+  # while the vehicle is parked at the selected path start and aligned
+  # with the desired initial path direction.
+  # origin_utm_x: 426271.8658252197 cankumenkou
+  # origin_utm_y: 4454090.808348643
+  origin_utm_x: 426171.86424516054 #nanyimen
+  origin_utm_y: 4454078.26198463
+
+
+  origin_heading_rad: 0
+  dX: 0.5
+  X_start: 0.05
+  X_end: 520.0
+  shape: 2.4
+  dx1: 25.0
+  dx2: 21.95
+  dy1: 4.05
+  dy2: 5.7
+  Xs1: 55.0
+  Xs2: 110.0
+  v_ref: 2.5
+  Ts: 0.05
+  R: 6.0
+  arc_angle_deg: 270.0
+  turn: "left"
+  L_straight: 12.0
+  L_end: 15.0
+  L_sine: 200.0
+  A: 3.0
+  wave_length: 60.0
+  phase_deg: -90.0
+  zero_start: true
+  dense_num: 10000
+
+weight:
+  # Q_diag: [270.0, 320.0, 570.0, 100.0] #ey ey_doe  e_psi e_psi_dot
+  # R_diag: [100.0, 100.0]
+  # Q_diag: [25400.0, 57800.0, 100.0, 1000.0]
+  # R_diag: [25.0, 25.0]
+  # Q_diag: [454.0, 0.0, 1000.0, 0.0]
+  # R_diag: [20.0, 20.0]
+  Q_diag: [12500.0, 19000.0, 10.0]   # [e_y, e_psi, e_psi_dot]
+  R_diag: [50.0, 50.0]
+debug:
+  print_init_matrix: true
+
+  # Print Riccati diagnostics: eig(A), controllability rank, condition number.
+  debug_lqr: false
+
+  # true: insert learned df_R_dr into Riccati A_p.
+  # false: use nominal 3-state A_p only.
+  use_df_R_dr_in_lqr_A: true
+
+  # 0.0 means no extra clamp here.
+  # yaw_residual_slope() itself is already clipped by L_n.
+  # Recommended first test: 0.1
+  df_R_dr_clip: 0.1
+
+# QP-MPC 参数。controller.type: mpc 时使用。
+# MPC 状态量为 [lateral_error, heading_error, speed, yaw_rate]。
+mpc:
+  Np: 11
+  Nc: 4
+  Q_diag: [45400.0, 97800.0, 100.0, 1000.0]
+  R_diag: [10.0, 10.0]
+  solver: OSQP
+  warm_start: false
+  verbose: false
+  eps_abs: 1.0e-6
+  eps_rel: 1.0e-6
+  max_iter: 10000
+  polish: true
+  adaptive_rho: false
+  qp_regularization: 1.0e-5

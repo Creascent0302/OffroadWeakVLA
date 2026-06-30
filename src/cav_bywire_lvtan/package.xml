@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>cav_bywire_lvtan</name>
+  <version>0.1.0</version>
+  <description>The cav_bywire_lvtan package for ROS2</description>
+  <maintainer email="shaobxu@tsinghua.edu.com">Shangyi Li and Shaobing Xu</maintainer>
+  <license>Not open source yet</license>
+  <author email="shaobxu@tsinghua.edu.com">Shangyi Li and Shaobing Xu</author>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>cav_msgs</depend>
+  <depend>can_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
