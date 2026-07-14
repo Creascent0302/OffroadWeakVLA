@@ -1,0 +1,32 @@
+# “小而真”预设 —— small-but-real.
+#
+# 用途：在笔记本 / CPU 上把 数据→模型→训练→保形→评测→分析 全链路真正跑出结果，
+#       而不是只验证“能跑”。它和 default.yaml 的唯一区别是 规模，不是 方法：
+#
+#   * 骨干仍是真的 DINOv2（用 ViT-S/14，比 ViT-B/14 快约 3 倍，特征仍有真实语义）
+#   * 语言编码器仍是真的 MiniLM（留出改写句的语义泛化实验必须要它）
+#   * 数据量缩小到 3200 张图（一次性特征缓存约几分钟；之后训练只有毫秒级）
+#
+# 不要用它出论文数字：cal 只有 800 条，alpha=0.05 的覆盖率估计噪声约 ±0.01。
+# 正式实验请用 default.yaml（dinov2_vitb14 + 4500 张图）。
+#
+#   python -m training.train --config-name small mode=modular
+#   python scripts/verify_framework.py --config small
+defaults:
+  - default
+  - _self_
+
+backbone: dinov2_vits14   # D=384（default 用 dinov2_vitb14，D=768）
+
+data:
+  root: artifacts/mock_small
+  sizes: {train: 1200, cal: 800, test: 800, ood: 400}
+
+train:
+  epochs: 200
+  patience: 25
+
+eval:
+  seeds: [0, 1, 2]        # 正式实验用 5 个种子
+
+artifacts_dir: artifacts/small

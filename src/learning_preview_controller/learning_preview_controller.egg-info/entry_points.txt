@@ -1,3 +1,0 @@
-[console_scripts]
-controller_node = learning_preview_controller.controller_node:main
-

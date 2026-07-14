@@ -1,0 +1,10 @@
+# C: (vision, language) -> slip bottleneck (+ controllable side channel) -> gear,
+# trained jointly. side_channel_weight is the leakage knob:
+#   0.0 -> the gear decision can only read vision through the slip concept
+#   >0  -> vision can bypass the concept; measure how much it does
+defaults:
+  - default
+  - _self_
+
+mode: hybrid
+side_channel_weight: 0.0

@@ -1,0 +1,24 @@
+# Blackwell (sm_120) requires CUDA 12.8 and torch >= 2.7.
+# Install torch FIRST, from the cu128 index:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# (Inside scripts/docker/Dockerfile torch already ships with the base image.)
+#
+# Nothing below compiles a CUDA kernel from source. Do NOT add mamba-ssm /
+# causal-conv1d / flash-attn: they have no cu128 wheels and would need nvcc.
+# Attention is always torch.nn.functional.scaled_dot_product_attention.
+torch>=2.7
+torchvision
+timm
+transformers
+sentence-transformers
+numpy
+opencv-python-headless
+pillow
+scikit-learn
+matplotlib
+hydra-core
+omegaconf
+wandb
+pandas
+tqdm
+pytest

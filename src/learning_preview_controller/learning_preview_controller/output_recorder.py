@@ -33,18 +33,22 @@ class OutputExcelRecorder:
         "last_speed_x_m_s",
         "last_left_wheel_cmd_rad_s",
         "last_right_wheel_cmd_rad_s",
+        "left_wheel_feedback_rad_s",
+        "right_wheel_feedback_rad_s",
+        "left_wheel_feedback_rpm",
+        "right_wheel_feedback_rpm",
         "out_00_f_U_estimated_g_U",
         "out_01_f_R_estimated_g_R",
         "out_02_f_U_observed_Obserdata_U",
         "out_03_f_R_observed_Obserdata_R",
-        "out_04_Au_est",
-        "out_05_Ar_est",
-        "out_06_Bu_est_left_wheel",
-        "out_07_Bu_est_right_wheel",
-        "out_08_Br_est_left_wheel",
-        "out_09_Br_est_right_wheel",
-        "out_10_A_0_1",
-        "out_11_A_1_0",
+        "out_04_runtime_A00",
+        "out_05_runtime_A11",
+        "out_06_runtime_B00",
+        "out_07_runtime_B01",
+        "out_08_runtime_B10",
+        "out_09_runtime_B11",
+        "out_10_runtime_A01",
+        "out_11_runtime_A10",
         "out_12_left_wheel_cmd_rad_s",
         "out_13_right_wheel_cmd_rad_s",
         "out_14_ref_X_m",
@@ -105,6 +109,10 @@ class OutputExcelRecorder:
         last_left_wheel_cmd,
         last_right_wheel_cmd,
         output_values,
+        left_wheel_feedback=math.nan,
+        right_wheel_feedback=math.nan,
+        left_wheel_feedback_rpm=math.nan,
+        right_wheel_feedback_rpm=math.nan,
     ):
         """Append one controller.output(...) sample and flush it to disk."""
 
@@ -138,6 +146,10 @@ class OutputExcelRecorder:
             last_speed_x,
             last_left_wheel_cmd,
             last_right_wheel_cmd,
+            left_wheel_feedback,
+            right_wheel_feedback,
+            left_wheel_feedback_rpm,
+            right_wheel_feedback_rpm,
             *values,
         ]
 
@@ -363,7 +375,7 @@ class OutputExcelRecorder:
                         width = 16
                     elif col_index == 1:
                         width = 18
-                    elif col_index >= 12:
+                    elif col_index >= 16:
                         width = 24
                     write(
                         f'<col min="{col_index + 1}" max="{col_index + 1}" '

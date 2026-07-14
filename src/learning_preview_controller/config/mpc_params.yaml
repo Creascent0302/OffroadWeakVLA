@@ -18,7 +18,7 @@ reference:
   u_r: 5.0
 
 constraint:
-  Delta_InputMax: 5.4
+  Delta_InputMax: 0.4
   ub_temp: 17.7
   lb_temp: -17.7
 
@@ -66,6 +66,12 @@ path:
   origin_utm_x: 426276.1782064089
   origin_utm_y: 4454092.170367943
   origin_heading_rad: 0
+
+  # true: 点击 Start 后，使用之后收到的第一帧 VehicleState
+  # 作为路径局部坐标系原点；该帧局部 x=0, y=0, heading=0。
+  # false: 继续使用上面的固定 origin_utm_x/y/origin_heading_rad。
+  use_start_frame_as_origin: true
+
   v_ref: 5.0
   dX: 0.5
   X_start: 0.05

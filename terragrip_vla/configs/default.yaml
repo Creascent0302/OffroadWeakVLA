@@ -1,0 +1,88 @@
+# TerraGrip-VLA defaults. `mode` is the ONLY thing that separates A / B / C
+# (plus side_channel_weight for C). Everything else is held fixed so the
+# comparison is controlled.
+
+mode: modular            # modular | e2e | hybrid
+side_channel_weight: 0.0 # hybrid only: 0 = pure concept bottleneck, >0 = leak
+
+backbone: dinov2_vitb14  # dinov2_vitb14 (D=768) | dinov2_vitl14 (D=1024) | dummy
+
+model:
+  # Dropout in BOTH heads (so the modes stay capacity-matched). The heads see a
+  # 768-d frozen feature with only ~1.8k training samples, so without this they
+  # memorise the slip noise: measured slip MAE 0.091 at dropout 0 vs 0.067 at 0.4
+  # against a Bayes floor of 0.056.
+  dropout: 0.4
+
+# NOTE: gears / contact_area / label.tau_train used to be declared here but nothing
+# read them -- editing them looked like it would do something and did not. They live
+# in constants.py (GEARS, CONTACT_AREA) and come from the instruction's risk budget
+# (tau), which is the only place a tau should come from.
+
+data:
+  root: artifacts/mock
+  seed: 0
+  sizes: {train: 2000, cal: 1000, test: 1000, ood: 500}
+
+
+alpha_buckets: [0.05, 0.10, 0.20]
+
+conformal:
+  # absolute   : score = y - mu                (the textbook split-conformal score)
+  # normalized : score = (y - mu) / sigma_hat  (locally adaptive)
+  #
+  # Use `normalized`. The slip noise here is strongly heteroscedastic (sigma
+  # ranges 0.02 on concrete to 0.15 on mud). With `absolute`, one global
+  # quantile must cover mud, so it is ~0.16 wide, and the upper bound on
+  # concrete becomes 0.05 + 0.16 = 0.21 > tau_careful = 0.15. The acceptable set
+  # is then EMPTY on every terrain under a careful instruction and modular
+  # degenerates to "always gear L" -- even with a perfect slip predictor.
+  # `normalized` keeps the exact same finite-sample guarantee (conformal is
+  # valid for ANY score function) while adapting the width per terrain.
+  # `absolute` is kept so the degeneracy can be shown as an ablation.
+  score: normalized
+  per_gear: false
+
+language:
+  encoder: minilm        # minilm (semantic) | hash (offline/CI, non-semantic)
+  condition: text        # what the gear head consumes:
+                         #   text   -> frozen MiniLM embedding (a real VLA)
+                         #   budget -> the (alpha, tau, lam) vector
+                         #   none   -> no language (ablation: breaks instruction following)
+  paraphrase_split: train  # heldout is reserved for the generalisation eval
+
+train:
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  batch_size: 256
+  epochs: 300
+  patience: 30           # early stopping on val loss
+  beta: 1.0              # hybrid: weight of the slip (concept) loss
+  sigma_weight: 1.0      # weight of the Gaussian NLL that fits sigma_hat.
+                         # mu is trained by MSE only; the NLL sees mu.detach(),
+                         # so adding sigma cannot change the mu the spec asks for.
+  precision: bf16
+  seed: 0
+
+eval:
+  seeds: [0, 1, 2, 3, 4]
+  # Leakage sweep, LOG-spaced. A linear [0, 0.1, 0.5, 1.0] sweep is useless here:
+  # measured leakage is 0.0 at scw=0 and already 1.0 at scw=0.1, so the curve is a
+  # step and the transition is invisible. ||side|| == scw exactly, but those 768
+  # unit-norm dims stay terrain-discriminative down to very small scales, so the
+  # interesting region is decades below 0.1.
+  scw_sweep: [0.0, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0]
+
+wandb:
+  enabled: false
+  project: terragrip
+
+artifacts_dir: artifacts
+
+hydra:
+  job:
+    chdir: false          # keep relative paths (configs/, artifacts/) meaningful
+  run:
+    dir: ${artifacts_dir}/hydra/${now:%Y%m%d_%H%M%S}
+  sweep:
+    dir: ${artifacts_dir}/hydra

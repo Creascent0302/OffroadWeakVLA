@@ -5,9 +5,13 @@ int32 	count               #1,2,3,4,5,...
 float64 brake_cmd 			#brake pedal opening [0-1, 100%]
 float64 throttle_cmd 		#throttle pedal openning [0-1, 100%]
 
-# Drive wheel angular speed commands, rad/s.
-# These two fields are the direct outputs [W_l, W_r] of Learning_preview_controller.
-# The bywire driver converts them to motor rpm before encoding to CAN.
+# DirectWheelRpm mode:
+#   left/right drive-wheel angular speed commands, rad/s.
+#   These are the direct outputs [W_l, W_r] of Learning_preview_controller.
+#
+# EquivalentSpeedSteer mode:
+#   left_drive_wheel_speed_cmd  = desired speed, cm/s
+#   right_drive_wheel_speed_cmd = front-wheel steering angle, deg
 float64 left_drive_wheel_speed_cmd
 float64 right_drive_wheel_speed_cmd
 int16 gear_cmd            # NONE:0, PARK:1, REVERSE:2, NEUTRAL:3, DRIVE:4, LOW:5

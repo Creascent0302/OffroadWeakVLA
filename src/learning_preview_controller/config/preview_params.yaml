@@ -11,22 +11,26 @@ dimension:
   NumDiscStates: 11
   Nx: 4
   Nu: 2
-  Np: 40
+  Np: 15
   Nc: 4
 
 
 
 constraint:
   Delta_InputMax: 0.4
-  ub_temp: 8.5
-  lb_temp: 3.5
+  # ub_temp: 10.5  #3m/s
+  # lb_temp: 8.5
+  ub_temp: 7.5  #2m/s
+  lb_temp: 5.0
+  # ub_temp: 3.8 #1m/s
+  # lb_temp: 1.5
 vehicle:
   L: 1.2
   Rmax: 8.0
   m: 325.0
   b: 0.557
   Iz: 75.0
-  wheel_radius: 0.58
+  wheel_radius: 0.29
 
 learning:
   useDisturbance: true
@@ -46,18 +50,18 @@ learning:
   # epsilon_rAB_l: 0.5
   # speed_threshold: 2.4
   # yaw_rate_threshold: 0.0792  这些是只跟新矩阵学习
-  epsilon_u_l: 0.19
+  epsilon_u_l: 0.4
   epsilon_r_l: 0.5
-  epsilon_uAB_l: 0.10
+  epsilon_uAB_l: 0.40
   epsilon_rAB_l: 0.5
-  epsilon_AB_l: 0.2
-  speed_threshold: 2.4
-  yaw_rate_threshold: 0.0792
+  epsilon_AB_l: 0.1
+  speed_threshold: 1.7  #1m/s-0.7
+  yaw_rate_threshold: 0.0292
   usingTrigger: true
-  using_preview: false
+  using_preview: true
 disturbance:
-  L_n: 0.2
-  e: 0.0
+  L_n: 0.4
+  e: 0.01
   sample_size: 5
 
 path:
@@ -68,36 +72,75 @@ path:
   # Replace these three values with VehicleState.x/y/heading measured
   # while the vehicle is parked at the selected path start and aligned
   # with the desired initial path direction.
-  # origin_utm_x: 426271.8658252197 cankumenkou
-  # origin_utm_y: 4454090.808348643
-  origin_utm_x: 426171.86424516054 #nanyimen
-  origin_utm_y: 4454078.26198463
+  # origin_utm_x: 426272.72396954737 # cankumenkou
+  # origin_utm_y: 4454091.599869306
 
 
-  origin_heading_rad: 0
-  dX: 0.5
+  # origin_utm_x: 426171.86424516054 #nanyimen
+  # origin_utm_y: 4454078.26198463
+  origin_utm_x: 426176.88225202163
+  origin_utm_y: 4454064.735533098
+
+
+  # origin_heading_rad: 0
+  origin_heading_rad: 1.1707963
+
+  # true: 点击 Start 后，使用之后收到的第一帧 VehicleState
+  # 作为路径局部坐标系原点；该帧局部 x=0, y=0, heading=0。
+  # false: 继续使用上面的固定 origin_utm_x/y/origin_heading_rad。
+  use_start_frame_as_origin: true
   X_start: 0.05
-  X_end: 520.0
-  shape: 2.4
-  dx1: 25.0
-  dx2: 21.95
-  dy1: 4.05
-  dy2: 5.7
-  Xs1: 55.0
-  Xs2: 110.0
-  v_ref: 2.5
+  X_end: 70.0
+  dX_dense: 0.01
+  shape: 4.5
+  dx1: 10.0
+  dx2: 10.0
+  dy1: 2.2
+  dy2: 2.2
+  Xs1: 10.0
+  Xs2: 34.0
+  v_ref: 2.0
   Ts: 0.05
   R: 6.0
   arc_angle_deg: 270.0
   turn: "left"
-  L_straight: 12.0
+  L_straight: 14.0 #14 2m/s   9 1m/s
   L_end: 15.0
-  L_sine: 200.0
-  A: 3.0
-  wave_length: 60.0
+  L_sine: 100.0
+  A: 2.0
+  wave_length: 30.0
   phase_deg: -90.0
   zero_start: true
   dense_num: 10000
+
+# 横向坡度/稳态偏差补偿。
+# 你的坐标里 Y 正方向为北、负方向为南；bias_yaw_rate 为正时，会给车辆一个很小的北向修正。
+# 作用：起步立刻生效，不再等积分慢慢积累；第一个弯也会保留这部分修正。
+lateral_integral:
+  enabled: true
+
+  # 固定坡度偏置：解决“一开始不起作用、先往南跑”的问题。
+  # 若车被修正到北侧过多，把 0.008 降到 0.004；
+  # 若仍明显往南，可以逐步加到 0.012。
+  bias_yaw_rate: 0.008
+  bias_wheel_limit: 0.08
+
+  # 起步预充积分：负值表示预先补一点北向修正，用来抵消南向坡度漂移。
+  # 若刚起步就向北过冲，把 -0.20 改成 -0.10 或 0.0。
+  initial_integral: -0.20
+
+  # 误差积分：用于消除直线段/平台段的持续南向偏差。
+  ki: 0.03
+  integral_limit: 1.4
+  wheel_correction_limit: 0.18
+  total_wheel_correction_limit: 0.23
+
+  # 以前曲率门限太小，进入第一个弯时补偿容易被冻结；这里放宽到 0.08。
+  error_deadband: 0.005
+  curvature_limit: 0.12
+  leak: 0.9997
+  min_speed: 0.3
+  stop_reset_speed: 0.12
 
 weight:
   # Q_diag: [270.0, 320.0, 570.0, 100.0] #ey ey_doe  e_psi e_psi_dot
@@ -106,8 +149,16 @@ weight:
   # R_diag: [25.0, 25.0]
   # Q_diag: [454.0, 0.0, 1000.0, 0.0]
   # R_diag: [20.0, 20.0]
-  Q_diag: [12500.0, 19000.0, 10.0]   # [e_y, e_psi, e_psi_dot]
-  R_diag: [50.0, 50.0]
+  # Q_diag: [250.0, 10.0, 1.0]   # 1m/s [e_y, e_psi, e_psi_dot]
+  # R_diag: [60.0, 60.0]
+  # Q_diag: [11950.0, 6500.0, 210.0]   # sin_used 2m/s [e_y, e_psi, e_psi_dot]
+  # R_diag: [150.0, 150.0]  
+  Q_diag: [15950.0, 11500.0, 810.0]   # sin_used 3m/s [e_y, e_psi, e_psi_dot]
+  R_diag: [150.0, 150.0]
+  # Q_diag: [2950.0, 4500.0, 100.0]   # 2m/s [e_y, e_psi, e_psi_dot]
+  # R_diag: [150.0, 150.0]
+  # Q_diag: [3750.0, 5500.0, 100.0]   # [e_y, e_psi, e_psi_dot]
+  # R_diag: [80.0, 80.0]
 debug:
   print_init_matrix: true
 

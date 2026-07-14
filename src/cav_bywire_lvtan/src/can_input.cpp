@@ -2,9 +2,12 @@
 #include "ros_cav.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <string>
 
 namespace
 {
@@ -14,27 +17,60 @@ enum class CanControlMode : uint8_t
     // 0x4C2 Byte 4~5: right wheel rpm * 10, signed int16, little-endian.
     DirectWheelRpm = 0,
 
-    // 0x4C2 Byte 2~3: equivalent vehicle speed, cm/s, uint16, little-endian.
-    // 0x4C2 Byte 4~5: equivalent front-wheel angle,
+    // 0x4C2 Byte 2~3: desired vehicle speed, cm/s, uint16, little-endian.
+    // 0x4C2 Byte 4~5: front-wheel angle,
     //                  raw = angle_deg * 10 + 1000, uint16, little-endian.
     EquivalentSpeedSteer = 1
 };
 
 /*
- * Select the 0x4C2 command format here.
+ * Select the 0x4C2 command format with the ROS parameter:
  *
- * Direct left/right wheel RPM:
- *     CanControlMode::DirectWheelRpm
+ *     can_control_mode: direct_wheel_rpm
+ *     can_control_mode: equivalent_speed_steer
  *
- * Equivalent speed + front-wheel angle:
- *     CanControlMode::EquivalentSpeedSteer
+ * DirectWheelRpm keeps the original learning-preview left/right wheel-speed
+ * command format. EquivalentSpeedSteer uses the same two ROS fields as:
+ *
+ *     left_drive_wheel_speed_cmd  = desired speed, cm/s
+ *     right_drive_wheel_speed_cmd = front-wheel angle, deg
  */
-// constexpr CanControlMode kCanControlMode =
-//     CanControlMode::DirectWheelRpm;
 
-// 这里改模式
-constexpr CanControlMode kCanControlMode =
-    CanControlMode::DirectWheelRpm;
+std::string normalize_mode_name(std::string mode)
+{
+    std::transform(
+        mode.begin(), mode.end(), mode.begin(),
+        [](unsigned char c) {
+            if (c == '-' || c == ' ')
+            {
+                return static_cast<char>('_');
+            }
+            return static_cast<char>(std::tolower(c));
+        });
+    return mode;
+}
+
+CanControlMode parse_can_control_mode(const std::string& raw_mode)
+{
+    const std::string mode = normalize_mode_name(raw_mode);
+
+    if (mode == "equivalent_speed_steer" ||
+        mode == "equivalent" ||
+        mode == "speed_steer" ||
+        mode == "stanley")
+    {
+        return CanControlMode::EquivalentSpeedSteer;
+    }
+
+    return CanControlMode::DirectWheelRpm;
+}
+
+CanControlMode selected_can_control_mode(const rclcpp::Node& node)
+{
+    std::string mode = "direct_wheel_rpm";
+    node.get_parameter("can_control_mode", mode);
+    return parse_can_control_mode(mode);
+}
 
 constexpr double kRpmToRadPerSec =
     (2.0 * PI) / 60.0;
@@ -56,7 +92,9 @@ constexpr double kEquivalentSpeedMaxCmS = 300.0;
 constexpr double kEquivalentSteerMaxDeg = 90.0;
 constexpr double kEquivalentSteerRawOffset = 1000.0;
 constexpr double kEquivalentSteerRawScale = 10.0;
-constexpr double kEquivalentSpeedEpsilonMps = 1.0e-4;
+// No upper-controller conversion is done in EquivalentSpeedSteer mode.
+// The lower controller receives speed_cm_s + steer_deg and handles its own
+// wheel-speed adaptation.
 
 template <typename T>
 T clamp_value(T value, T lo, T hi)
@@ -166,115 +204,52 @@ int16_t wheel_rad_s_to_rpm_x10(double wheel_speed_rad_s)
 
 struct EquivalentVehicleCommand
 {
-    // Physical values used by the lower-controller protocol.
+    // Values already supplied by the upper controller.
     double speed_cm_s = 0.0;
     double steer_deg = 0.0;
 };
-
-EquivalentVehicleCommand wheel_rad_s_to_equivalent_command(
-    double left_wheel_rad_s,
-    double right_wheel_rad_s)
-{
-    EquivalentVehicleCommand command;
-
-    if (!std::isfinite(left_wheel_rad_s) ||
-        !std::isfinite(right_wheel_rad_s))
-    {
-        return command;
-    }
-
-    // Drive-wheel angular speed, rad/s -> wheel linear speed, m/s.
-    const double left_linear_mps =
-        left_wheel_rad_s * LYNX_WHEEL_RADIUS;
-
-    const double right_linear_mps =
-        right_wheel_rad_s * LYNX_WHEEL_RADIUS;
-
-    // Differential-drive equivalent longitudinal speed.
-    const double speed_mps =
-        0.5 * (left_linear_mps + right_linear_mps);
-
-    // Differential-drive yaw rate.
-    // Full track width = 2 * LYNX_HALF_TRACK.
-    const double yaw_rate_rad_s =
-        (right_linear_mps - left_linear_mps) /
-        (2.0 * LYNX_HALF_TRACK);
-
-    /*
-     * The equivalent protocol has an unsigned forward-speed field.
-     * Reverse motion and pivot turns cannot be represented accurately.
-     * For those cases, output zero speed and zero steering.
-     */
-    if (!std::isfinite(speed_mps) ||
-        !std::isfinite(yaw_rate_rad_s) ||
-        speed_mps <= kEquivalentSpeedEpsilonMps)
-    {
-        return command;
-    }
-
-    /*
-     * Equivalent bicycle-model steering:
-     *
-     * yaw_rate = speed * tan(delta) / wheelbase
-     *
-     * delta = atan(wheelbase * yaw_rate / speed)
-     */
-    const double steer_rad =
-        std::atan(
-            LYNX_L_WHEELS *
-            yaw_rate_rad_s /
-            speed_mps);
-
-    command.speed_cm_s =
-        clamp_value(
-            speed_mps * 100.0,
-            0.0,
-            kEquivalentSpeedMaxCmS);
-
-    command.steer_deg =
-        clamp_value(
-            steer_rad * 180.0 / PI,
-            -kEquivalentSteerMaxDeg,
-            kEquivalentSteerMaxDeg);
-
-    return command;
-}
 
 void encode_direct_wheel_rpm_payload(
     std::array<uint8_t, 8UL>& data,
     double left_wheel_rad_s,
     double right_wheel_rad_s)
 {
-    const int16_t left_raw =
-        wheel_rad_s_to_rpm_x10(
-            left_wheel_rad_s);
+    const int16_t left_rpm_x10 =
+        wheel_rad_s_to_rpm_x10(left_wheel_rad_s);
 
-    const int16_t right_raw =
-        wheel_rad_s_to_rpm_x10(
-            right_wheel_rad_s);
+    const int16_t right_rpm_x10 =
+        wheel_rad_s_to_rpm_x10(right_wheel_rad_s);
 
-    // Byte 2~3: left wheel rpm*10, signed int16, little-endian.
-    write_i16_le(data, 2, left_raw);
-
-    // Byte 4~5: right wheel rpm*10, signed int16, little-endian.
-    write_i16_le(data, 4, right_raw);
+    write_i16_le(data, 2, left_rpm_x10);
+    write_i16_le(data, 4, right_rpm_x10);
 }
+
+
 
 EquivalentVehicleCommand encode_equivalent_speed_steer_payload(
     std::array<uint8_t, 8UL>& data,
-    double left_wheel_rad_s,
-    double right_wheel_rad_s)
+    double speed_cm_s,
+    double steer_deg)
 {
-    const EquivalentVehicleCommand command =
-        wheel_rad_s_to_equivalent_command(
-            left_wheel_rad_s,
-            right_wheel_rad_s);
+    EquivalentVehicleCommand command;
+
+    command.speed_cm_s =
+        clamp_value(
+            std::isfinite(speed_cm_s) ? speed_cm_s : 0.0,
+            0.0,
+            kEquivalentSpeedMaxCmS);
+
+    command.steer_deg =
+        clamp_value(
+            std::isfinite(steer_deg) ? steer_deg : 0.0,
+            -kEquivalentSteerMaxDeg,
+            kEquivalentSteerMaxDeg);
 
     /*
-     * Byte 2~3: speed in cm/s.
+     * Byte 2~3: desired speed in cm/s.
      *
      * Example:
-     *     300 cm/s -> raw 300 -> 0x012C -> 2C 01
+     *     200 cm/s -> raw 200 -> 0x00C8 -> C8 00
      */
     const uint16_t speed_raw =
         clamp_to_uint16(command.speed_cm_s);
@@ -368,7 +343,12 @@ void ROSNode::control2bywire_CB(
     can_input.Stop = 0;
     can_input.Go = 1;
 
-    // Direct left/right drive-wheel angular-speed commands, rad/s.
+    // DirectWheelRpm mode:
+    //   left/right drive-wheel angular-speed commands, rad/s.
+    //
+    // EquivalentSpeedSteer mode:
+    //   left field  = desired speed, cm/s.
+    //   right field = front-wheel angle, deg.
     can_input.left_drive_wheel_speed_cmd =
         msg->left_drive_wheel_speed_cmd;
 
@@ -440,7 +420,9 @@ void ROSNode::encode_4C2()
 
     if (motion_enabled)
     {
-        switch (kCanControlMode)
+        const CanControlMode can_control_mode = selected_can_control_mode(*this);
+
+        switch (can_control_mode)
         {
             case CanControlMode::DirectWheelRpm:
             {
@@ -454,11 +436,11 @@ void ROSNode::encode_4C2()
                     data,
                     can_input.left_drive_wheel_speed_can_cmd,
                     can_input.right_drive_wheel_speed_can_cmd);
-                printf("can_input.left_drive_wheel_speed_can_cmd = %.2f\n",
-                    can_input.left_drive_wheel_speed_can_cmd);
+                // printf("can_input.left_drive_wheel_speed_can_cmd = %.2f\n",
+                //     can_input.left_drive_wheel_speed_can_cmd);
 
-                printf("can_input.right_drive_wheel_speed_can_cmd = %.2f\n",
-                    can_input.right_drive_wheel_speed_can_cmd);
+                // printf("can_input.right_drive_wheel_speed_can_cmd = %.2f\n",
+                //     can_input.right_drive_wheel_speed_can_cmd);
                 RCLCPP_INFO_THROTTLE(
                     this->get_logger(),
                     *(this->get_clock()),
@@ -476,9 +458,14 @@ void ROSNode::encode_4C2()
                 /*
                  * Equivalent-command mode:
                  *
-                 * Byte 2~3: equivalent speed, cm/s
+                 * Byte 2~3: desired speed, cm/s.
                  * Byte 4~5: front-wheel angle,
-                 *           raw = degree*10 + 1000
+                 *           raw = degree*10 + 1000.
+                 *
+                 * No wheel-speed conversion is done here. The old left/right
+                 * fields are reused as:
+                 *   left  = speed_cm_s
+                 *   right = steer_deg
                  */
                 const EquivalentVehicleCommand command =
                     encode_equivalent_speed_steer_payload(
@@ -491,12 +478,9 @@ void ROSNode::encode_4C2()
                     *(this->get_clock()),
                     1000,
                     "4C2 mode=EQUIVALENT: "
-                    "speed=%.1f cm/s, steer=%.2f deg, "
-                    "source wheels=(%.2f, %.2f) rad/s",
+                    "speed=%.1f cm/s, steer=%.2f deg",
                     command.speed_cm_s,
-                    command.steer_deg,
-                    can_input.left_drive_wheel_speed_can_cmd,
-                    can_input.right_drive_wheel_speed_can_cmd);
+                    command.steer_deg);
 
                 break;
             }

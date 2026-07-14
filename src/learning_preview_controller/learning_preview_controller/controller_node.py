@@ -1,3 +1,4 @@
+import json
 import math
 import traceback
 
@@ -7,10 +8,11 @@ from rclpy.node import Node
 from ament_index_python.packages import get_package_share_directory
 
 from cav_msgs.msg import Control, VehicleState
+from std_msgs.msg import String
 
 from .controller import Learning_preview_controller
 from .output_recorder import OutputExcelRecorder
-from .realtime_plot import RealtimeControllerPlot
+from .start_stop_panel import StartStopPanel
 
 
 class LearningPreviewControllerNode(Node):
@@ -52,14 +54,22 @@ class LearningPreviewControllerNode(Node):
             "control_topic",
             "/vehicle/control2bywire",
         )
+        self.declare_parameter(
+            "wheel_feedback_topic",
+            "/vehicle/wheel_feedback",
+        )
         self.declare_parameter("control_period", 0.05)
         self.declare_parameter("config_file", "")
         self.declare_parameter("gear_cmd", 4)
         self.declare_parameter("vehicle_mode", 1)
         self.declare_parameter("enable_bywire", True)
-        self.declare_parameter("enable_plot", True)
+        # Start/Stop remains inside this control node.  Plotting is now
+        # a separate node that subscribes to plot_sample_topic.
+        self.declare_parameter("enable_start_panel", True)
+        self.declare_parameter("start_panel_update_period", 0.20)
         self.declare_parameter("calculate_control_on_start", False)
-        self.declare_parameter("plot_update_period", 0.20)
+        self.declare_parameter("publish_plot_samples", True)
+        self.declare_parameter("plot_sample_topic", "/learning_preview/plot_sample")
         self.declare_parameter("plot_time_window_sec", 60.0)
         self.declare_parameter("plot_history_points", 2000)
         self.declare_parameter(
@@ -74,6 +84,11 @@ class LearningPreviewControllerNode(Node):
         )
         control_topic = str(
             self.get_parameter("control_topic").value
+        )
+        wheel_feedback_topic = str(
+            self.get_parameter(
+                "wheel_feedback_topic"
+            ).value
         )
         control_period = float(
             self.get_parameter("control_period").value
@@ -127,7 +142,21 @@ class LearningPreviewControllerNode(Node):
                 "origin_heading_rad"
             )
 
+        # Optional dynamic origin mode.  When enabled, every time
+        # controller.output() is started, the first fresh VehicleState
+        # frame after Start becomes the path origin.  Therefore that
+        # frame maps to local x=0, y=0, heading=0.
+        self.use_start_frame_as_origin = self._cfg_bool(
+            path_cfg,
+            "use_start_frame_as_origin",
+            False,
+        )
+        self.start_origin_capture_pending = False
+        self.start_origin_capture_min_sequence = 0
+        self.start_origin_has_been_captured = False
+
         self.state = None
+        self.state_sequence = 0
         self.count = 0
         self.last_stop_reason = ""
 
@@ -135,6 +164,12 @@ class LearningPreviewControllerNode(Node):
         self.last_r = 0.0
         self.last_w_l = 0.0
         self.last_w_r = 0.0
+
+        self.latest_left_wheel_feedback = math.nan
+        self.latest_right_wheel_feedback = math.nan
+        self.latest_left_wheel_feedback_rpm = math.nan
+        self.latest_right_wheel_feedback_rpm = math.nan
+        self.latest_wheel_feedback_time = math.nan
 
         self.output_recorder = OutputExcelRecorder(
             record_dir=str(
@@ -152,46 +187,41 @@ class LearningPreviewControllerNode(Node):
             ).value
         )
 
-        # Real-time plotting state.
-        self.plotter = None
+        # Plotting is decoupled: this node only publishes samples.
         self.plot_start_time_sec = (
             self.get_clock().now().nanoseconds * 1.0e-9
         )
+        self.publish_plot_samples = bool(
+            self.get_parameter("publish_plot_samples").value
+        )
+        plot_sample_topic = str(
+            self.get_parameter("plot_sample_topic").value
+        )
+        self.pub_plot_sample = self.create_publisher(
+            String,
+            plot_sample_topic,
+            50,
+        )
 
-        if bool(self.get_parameter("enable_plot").value):
+        # Start/Stop is still owned by the controller process.
+        self.start_panel = None
+        if bool(self.get_parameter("enable_start_panel").value):
             try:
-                self.plotter = RealtimeControllerPlot(
-                    ref_path=self.controller.ref_path,
-                    initial_calculate_enabled=self.calculate_control_enabled,
-                    history_points=int(
-                        self.get_parameter(
-                            "plot_history_points"
-                        ).value
-                    ),
-                    time_window_sec=float(
-                        self.get_parameter(
-                            "plot_time_window_sec"
-                        ).value
-                    ),
-                    desired_speed=getattr(
-                        self.controller,
-                        "u_r",
-                        None,
-                    ),
-                )
-                self.plotter.set_calculate_enabled_callback(
-                    self.set_calculate_control_enabled
+                self.start_panel = StartStopPanel(
+                    initial_enabled=self.calculate_control_enabled,
+                    on_toggle=self.set_calculate_control_enabled,
+                    title="Learning Preview Controller Start / Stop",
                 )
                 self.get_logger().info(
-                    "Real-time plotting is enabled. "
-                    "Use the dashboard button to start/stop "
-                    "controller.output() calculation."
+                    "Start/Stop panel is enabled in the controller node. "
+                    "Plotting is handled by the separate plot_node."
                 )
             except Exception:
-                self.plotter = None
+                self.start_panel = None
                 self.get_logger().error(
-                    "Failed to initialize real-time plotting. "
-                    "The controller will continue without plots.\n"
+                    "Failed to initialize Start/Stop panel. "
+                    "The controller will still run; set "
+                    "calculate_control_on_start=true for headless startup.\n"
                     + traceback.format_exc()
                 )
 
@@ -208,54 +238,72 @@ class LearningPreviewControllerNode(Node):
             10,
         )
 
+        self.sub_wheel_feedback = self.create_subscription(
+            VehicleState,
+            wheel_feedback_topic,
+            self.wheel_feedback_callback,
+            20,
+        )
+
         self.timer = self.create_timer(
             control_period,
             self.control_loop,
         )
 
-        self.plot_timer = None
-        if self.plotter is not None:
-            plot_update_period = max(
+        self.start_panel_timer = None
+        if self.start_panel is not None:
+            start_panel_update_period = max(
                 float(
                     self.get_parameter(
-                        "plot_update_period"
+                        "start_panel_update_period"
                     ).value
                 ),
                 0.05,
             )
-            self.plot_timer = self.create_timer(
-                plot_update_period,
-                self.update_plot,
+            self.start_panel_timer = self.create_timer(
+                start_panel_update_period,
+                self.update_start_panel,
             )
 
         self.get_logger().info(
             "Learning preview controller started. "
             f"state='{vehicle_state_topic}', "
+            f"wheel_feedback='{wheel_feedback_topic}', "
             f"cmd='{control_topic}', "
             f"period={control_period:.3f}s, "
             f"config='{config_file}'"
         )
 
         self.get_logger().info(
-            "Fixed path origin: "
+            "Initial path origin: "
             f"UTM x={self.origin_utm_x:.3f} m, "
             f"UTM y={self.origin_utm_y:.3f} m, "
             f"heading={self.origin_heading_rad:.6f} rad. "
-            "This pose maps to local (0, 0, 0)."
+            "This pose maps to local (0, 0, 0). "
+            "use_start_frame_as_origin="
+            f"{self.use_start_frame_as_origin}."
         )
 
         self.get_logger().warn(
             "Controller output calculation is "
             + ("ENABLED" if self.calculate_control_enabled else "DISABLED")
             + " on startup. "
-            "When disabled, vehicle state is still plotted but only "
+            "When disabled, vehicle state is still published for plotting but only "
             "safe stop commands are published."
         )
 
         if self.calculate_control_enabled:
-            self.output_recorder.start(
-                self.get_clock().now().nanoseconds * 1.0e-9
-            )
+            if self.use_start_frame_as_origin:
+                self.request_start_frame_origin_capture()
+                self.get_logger().warn(
+                    "Controller output calculation is enabled on startup. "
+                    "Waiting for the first VehicleState frame to reset "
+                    "the path origin to local (0, 0, 0)."
+                )
+            else:
+                self.output_recorder.start(
+                    self.get_clock().now().nanoseconds * 1.0e-9
+                )
 
         if self.has_valid_reference_path():
             path = np.asarray(
@@ -292,6 +340,20 @@ class LearningPreviewControllerNode(Node):
             math.sin(angle),
             math.cos(angle),
         )
+
+    @staticmethod
+    def _cfg_bool(config, key, default=False):
+        value = config.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+        return bool(value)
 
     def has_valid_reference_path(self):
         """Return True only for a usable finite reference path."""
@@ -348,6 +410,70 @@ class LearningPreviewControllerNode(Node):
 
         return local_x, local_y, local_heading
 
+    def request_start_frame_origin_capture(self):
+        """Capture the first fresh VehicleState frame after Start."""
+
+        self.start_origin_capture_pending = True
+        self.start_origin_capture_min_sequence = self.state_sequence
+        self.start_origin_has_been_captured = False
+        self.get_logger().info(
+            "Start-frame origin capture armed. "
+            "The next fresh VehicleState frame will become "
+            "local (0, 0, 0)."
+        )
+
+    def capture_start_frame_origin(
+        self,
+        global_x,
+        global_y,
+        global_heading,
+    ):
+        """Set current global pose as the origin for the path frame."""
+
+        self.origin_utm_x = float(global_x)
+        self.origin_utm_y = float(global_y)
+        self.origin_heading_rad = self._wrap_to_pi(
+            float(global_heading)
+        )
+
+        self.start_origin_capture_pending = False
+        self.start_origin_has_been_captured = True
+
+        # Reset controller state that depends on path progress or previous
+        # samples so the run starts cleanly from the new local frame.
+        if hasattr(self.controller, "ID_last"):
+            self.controller.ID_last = 0
+        if hasattr(self.controller, "lateral_err"):
+            self.controller.lateral_err = 0.0
+        if hasattr(self.controller, "ResetLateralBiasIntegral"):
+            self.controller.ResetLateralBiasIntegral()
+
+        self.last_u = 0.0
+        self.last_r = 0.0
+        self.last_w_l = 0.0
+        self.last_w_r = 0.0
+        self.last_stop_reason = ""
+
+        now_sec = (
+            self.get_clock().now().nanoseconds * 1.0e-9
+        )
+        self.plot_start_time_sec = now_sec
+
+        self.publish_plot_reset()
+
+        if self.output_recorder.is_recording:
+            saved_path = self.output_recorder.stop()
+            self.save_plot_figures(saved_path)
+        self.output_recorder.start(now_sec)
+
+        self.get_logger().warn(
+            "Start-frame origin captured: "
+            f"UTM x={self.origin_utm_x:.3f} m, "
+            f"UTM y={self.origin_utm_y:.3f} m, "
+            f"heading={self.origin_heading_rad:.6f} rad. "
+            "This frame now maps to local x=0, y=0, heading=0."
+        )
+
 
     def compute_tracking_errors(self, x, y, psi):
         """Compute e_y and e_psi without running controller.output()."""
@@ -379,13 +505,87 @@ class LearningPreviewControllerNode(Node):
         msg: VehicleState,
     ):
         self.state = msg
+        self.state_sequence += 1
+
+    def wheel_feedback_callback(
+        self,
+        msg: VehicleState,
+    ):
+        """Store the freshest CAN wheel-speed feedback sample."""
+
+        left_speed = self._finite(
+            msg.left_drive_wheel_speed,
+            math.nan,
+        )
+        right_speed = self._finite(
+            msg.right_drive_wheel_speed,
+            math.nan,
+        )
+        left_rpm = self._finite(
+            msg.left_drive_wheel_rpm,
+            math.nan,
+        )
+        right_rpm = self._finite(
+            msg.right_drive_wheel_rpm,
+            math.nan,
+        )
+
+        if math.isfinite(left_speed):
+            self.latest_left_wheel_feedback = left_speed
+        if math.isfinite(right_speed):
+            self.latest_right_wheel_feedback = right_speed
+        if math.isfinite(left_rpm):
+            self.latest_left_wheel_feedback_rpm = left_rpm
+        if math.isfinite(right_rpm):
+            self.latest_right_wheel_feedback_rpm = right_rpm
+
+        stamp = self._finite(msg.timestamp, math.nan)
+        if not math.isfinite(stamp):
+            stamp = self.get_clock().now().nanoseconds * 1.0e-9
+        self.latest_wheel_feedback_time = stamp
+
+    def get_current_wheel_feedback(self, state=None):
+        """Return latest left/right wheel feedback, with VehicleState fallback."""
+
+        left_speed = self.latest_left_wheel_feedback
+        right_speed = self.latest_right_wheel_feedback
+        left_rpm = self.latest_left_wheel_feedback_rpm
+        right_rpm = self.latest_right_wheel_feedback_rpm
+
+        if state is not None:
+            if not math.isfinite(left_speed):
+                left_speed = self._finite(
+                    state.left_drive_wheel_speed,
+                    math.nan,
+                )
+            if not math.isfinite(right_speed):
+                right_speed = self._finite(
+                    state.right_drive_wheel_speed,
+                    math.nan,
+                )
+            if not math.isfinite(left_rpm):
+                left_rpm = self._finite(
+                    state.left_drive_wheel_rpm,
+                    math.nan,
+                )
+            if not math.isfinite(right_rpm):
+                right_rpm = self._finite(
+                    state.right_drive_wheel_rpm,
+                    math.nan,
+                )
+
+        return left_speed, right_speed, left_rpm, right_rpm
+
+    def save_plot_figures(self, xlsx_path):
+        # Plot figures are now owned by plot_node, not by the controller.
+        return
 
     def set_calculate_control_enabled(self, enabled):
-        """Callback used by the Matplotlib UI button.
+        """Callback used by the controller-owned Start/Stop panel.
 
         This only gates the expensive/active controller.output(...) call.
-        Vehicle-state subscription, coordinate conversion, plot refresh, and
-        safe-stop publishing continue to run.
+        Vehicle-state subscription, coordinate conversion, plot sample
+        publishing, and safe-stop publishing continue to run.
         """
 
         enabled = bool(enabled)
@@ -395,16 +595,38 @@ class LearningPreviewControllerNode(Node):
         self.calculate_control_enabled = enabled
 
         if enabled:
-            self.output_recorder.start(
+            self.plot_start_time_sec = (
                 self.get_clock().now().nanoseconds * 1.0e-9
             )
-            self.get_logger().warn(
-                "UI enabled controller.output() calculation. "
-                "Normal control commands may be published."
-            )
+            if hasattr(self.controller, "ResetLateralBiasIntegral"):
+                self.controller.ResetLateralBiasIntegral()
+
+            # Clear the independent plot immediately when Start is clicked.
+            # If dynamic-origin mode is enabled, another reset is sent after
+            # the first fresh VehicleState frame captures the exact origin.
+            self.publish_plot_reset()
+            if self.use_start_frame_as_origin:
+                self.request_start_frame_origin_capture()
+                self.get_logger().warn(
+                    "UI enabled controller.output() calculation. "
+                    "Waiting for the first VehicleState frame after "
+                    "Start to reset local origin and heading."
+                )
+            else:
+                self.output_recorder.start(
+                    self.get_clock().now().nanoseconds * 1.0e-9
+                )
+                self.get_logger().warn(
+                    "UI enabled controller.output() calculation. "
+                    "Normal control commands may be published."
+                )
             self.last_stop_reason = ""
         else:
+            self.start_origin_capture_pending = False
+            if hasattr(self.controller, "ResetLateralBiasIntegral"):
+                self.controller.ResetLateralBiasIntegral()
             saved_path = self.output_recorder.stop()
+            self.save_plot_figures(saved_path)
             self.get_logger().warn(
                 "UI disabled controller.output() calculation. "
                 "Publishing safe stop commands only."
@@ -417,6 +639,57 @@ class LearningPreviewControllerNode(Node):
                 "controller output calculation is disabled from UI"
             )
 
+        if self.start_panel is not None:
+            self.start_panel.set_enabled(self.calculate_control_enabled)
+
+        self.publish_plot_event(
+            "control_enabled",
+            enabled=self.calculate_control_enabled,
+        )
+
+    @staticmethod
+    def _json_safe(value):
+        if isinstance(value, np.ndarray):
+            return LearningPreviewControllerNode._json_safe(
+                value.tolist()
+            )
+        if isinstance(value, (list, tuple)):
+            return [
+                LearningPreviewControllerNode._json_safe(item)
+                for item in value
+            ]
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    def publish_plot_reset(self):
+        """Clear plot history and synchronize path/origin with this controller."""
+        ref_path = np.asarray(self.controller.ref_path, dtype=float)
+        path_type = str(self.controller.path_cfg.get("type", "straight_circle")).strip().lower()
+        self.publish_plot_event(
+            "reset",
+            controller_type=str(getattr(self.controller, "controller_type", "preview")),
+            origin_utm_x=self._json_safe(self.origin_utm_x),
+            origin_utm_y=self._json_safe(self.origin_utm_y),
+            origin_heading_rad=self._json_safe(self.origin_heading_rad),
+            ref_path=self._json_safe(ref_path),
+            position_equal_aspect=path_type not in ("sine", "sin"),
+        )
+
+    def publish_plot_event(self, event, **extra):
+        if not self.publish_plot_samples:
+            return
+        payload = {
+            "event": str(event),
+            "ros_time_sec": self.get_clock().now().nanoseconds * 1.0e-9,
+        }
+        payload.update(extra)
+        msg = String()
+        msg.data = json.dumps(payload, separators=(",", ":"))
+        self.pub_plot_sample.publish(msg)
+
     def append_plot_sample(
         self,
         local_x,
@@ -425,56 +698,62 @@ class LearningPreviewControllerNode(Node):
         heading_error=math.nan,
         left_wheel_cmd=0.0,
         right_wheel_cmd=0.0,
+        left_wheel_feedback=math.nan,
+        right_wheel_feedback=math.nan,
         vehicle_speed=0.0,
         nonlinear_observed_u=math.nan,
         nonlinear_observed_r=math.nan,
         nonlinear_estimated_u=math.nan,
         nonlinear_estimated_r=math.nan,
     ):
-        if self.plotter is None:
+        if not self.publish_plot_samples:
             return
 
         now_sec = (
             self.get_clock().now().nanoseconds * 1.0e-9
         )
-        elapsed_sec = (
-            now_sec - self.plot_start_time_sec
-        )
+        elapsed_sec = now_sec - self.plot_start_time_sec
 
-        self.plotter.append_sample(
-            time_sec=elapsed_sec,
-            local_x=local_x,
-            local_y=local_y,
-            lateral_error=lateral_error,
-            heading_error=heading_error,
-            left_wheel_cmd=left_wheel_cmd,
-            right_wheel_cmd=right_wheel_cmd,
-            matrix_a=self.controller.A,
-            matrix_b=self.controller.B,
-            vehicle_speed=vehicle_speed,
-            nonlinear_observed_u=nonlinear_observed_u,
-            nonlinear_observed_r=nonlinear_observed_r,
-            nonlinear_estimated_u=nonlinear_estimated_u,
-            nonlinear_estimated_r=nonlinear_estimated_r,
-        )
+        payload = {
+            "event": "sample",
+            "time_sec": self._json_safe(elapsed_sec),
+            "local_x": self._json_safe(local_x),
+            "local_y": self._json_safe(local_y),
+            "lateral_error": self._json_safe(lateral_error),
+            "heading_error": self._json_safe(heading_error),
+            "left_wheel_cmd": self._json_safe(left_wheel_cmd),
+            "right_wheel_cmd": self._json_safe(right_wheel_cmd),
+            "left_wheel_feedback": self._json_safe(left_wheel_feedback),
+            "right_wheel_feedback": self._json_safe(right_wheel_feedback),
+            "matrix_a": self._json_safe(getattr(self.controller, "A", None)),
+            "matrix_b": self._json_safe(getattr(self.controller, "B", None)),
+            "vehicle_speed": self._json_safe(vehicle_speed),
+            "nonlinear_observed_u": self._json_safe(nonlinear_observed_u),
+            "nonlinear_observed_r": self._json_safe(nonlinear_observed_r),
+            "nonlinear_estimated_u": self._json_safe(nonlinear_estimated_u),
+            "nonlinear_estimated_r": self._json_safe(nonlinear_estimated_r),
+            "control_enabled": bool(self.calculate_control_enabled),
+        }
 
-    def update_plot(self):
-        if self.plotter is None:
+        msg = String()
+        msg.data = json.dumps(payload, separators=(",", ":"))
+        self.pub_plot_sample.publish(msg)
+
+    def update_start_panel(self):
+        if self.start_panel is None:
             return
-
         try:
-            self.plotter.update()
+            self.start_panel.update()
         except Exception:
             self.get_logger().error(
-                "Real-time plot update failed. "
-                "Plotting has been disabled.\n"
+                "Start/Stop panel update failed.\n"
                 + traceback.format_exc()
             )
             try:
-                self.plotter.close()
+                self.start_panel.close()
             except Exception:
                 pass
-            self.plotter = None
+            self.start_panel = None
 
     def make_safe_zero_cmd(self):
         """Create an explicit vehicle-stop request."""
@@ -568,6 +847,27 @@ class LearningPreviewControllerNode(Node):
             state.heading
         )
 
+        if (
+            self.calculate_control_enabled
+            and self.use_start_frame_as_origin
+            and self.start_origin_capture_pending
+        ):
+            if (
+                self.state_sequence
+                <= self.start_origin_capture_min_sequence
+            ):
+                self.publish_stop(
+                    "waiting for first vehicle state after Start "
+                    "to reset origin"
+                )
+                return
+
+            self.capture_start_frame_origin(
+                global_x,
+                global_y,
+                global_heading,
+            )
+
         x, y, psi = self.global_to_path_frame(
             global_x,
             global_y,
@@ -576,6 +876,13 @@ class LearningPreviewControllerNode(Node):
 
         r = self._finite(state.yaw_rate)
         u = self._finite(state.speed_x)
+
+        (
+            left_wheel_feedback,
+            right_wheel_feedback,
+            left_wheel_feedback_rpm,
+            right_wheel_feedback_rpm,
+        ) = self.get_current_wheel_feedback(state)
 
         if not self.calculate_control_enabled:
             # Keep the real-time state and tracking-error display alive
@@ -588,6 +895,8 @@ class LearningPreviewControllerNode(Node):
                 heading_error=ephi,
                 left_wheel_cmd=0.0,
                 right_wheel_cmd=0.0,
+                left_wheel_feedback=left_wheel_feedback,
+                right_wheel_feedback=right_wheel_feedback,
                 vehicle_speed=u,
             )
             self.last_u = u
@@ -683,6 +992,8 @@ class LearningPreviewControllerNode(Node):
                 heading_error=ephi,
                 left_wheel_cmd=0.0,
                 right_wheel_cmd=0.0,
+                left_wheel_feedback=left_wheel_feedback,
+                right_wheel_feedback=right_wheel_feedback,
                 vehicle_speed=u,
             )
             self.publish_stop(
@@ -739,6 +1050,10 @@ class LearningPreviewControllerNode(Node):
             last_left_wheel_cmd=self.last_w_l,
             last_right_wheel_cmd=self.last_w_r,
             output_values=out,
+            left_wheel_feedback=left_wheel_feedback,
+            right_wheel_feedback=right_wheel_feedback,
+            left_wheel_feedback_rpm=left_wheel_feedback_rpm,
+            right_wheel_feedback_rpm=right_wheel_feedback_rpm,
         )
 
         # Record the local vehicle position, the commands that are about
@@ -750,6 +1065,8 @@ class LearningPreviewControllerNode(Node):
             heading_error=ephi,
             left_wheel_cmd=w_l,
             right_wheel_cmd=w_r,
+            left_wheel_feedback=left_wheel_feedback,
+            right_wheel_feedback=right_wheel_feedback,
             vehicle_speed=u,
             nonlinear_observed_u=nonlinear_observed_u,
             nonlinear_observed_r=nonlinear_observed_r,
@@ -767,6 +1084,7 @@ class LearningPreviewControllerNode(Node):
 
     def close_output_recorder(self):
         saved_path = self.output_recorder.close()
+        self.save_plot_figures(saved_path)
         if saved_path is not None:
             self.get_logger().info(
                 f"Output record saved to: {saved_path}"
@@ -785,9 +1103,9 @@ def main(args=None):
             node.close_output_recorder()
         except Exception:
             pass
-        if node.plotter is not None:
+        if node.start_panel is not None:
             try:
-                node.plotter.close()
+                node.start_panel.close()
             except Exception:
                 pass
         node.destroy_node()

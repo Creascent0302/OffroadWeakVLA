@@ -23,6 +23,7 @@ setup(
     entry_points={
         "console_scripts": [
             "controller_node = learning_preview_controller.controller_node:main",
+            "stanley_controller = learning_preview_controller.stanley_controller:main",
         ],
     },
 )

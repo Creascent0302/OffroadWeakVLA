@@ -1,0 +1,65 @@
+# Stanley-only config.
+# This file intentionally does not contain Preview/MPC/Learning parameters.
+
+path:
+  # Choose one: sine, straight_circle, double_lane_change
+  type: straight_circle
+
+  # Fixed global UTM pose corresponding to local path pose (0, 0, 0).
+  origin_utm_x: 426176.88225202163
+  origin_utm_y: 4454064.735533098
+  origin_heading_rad: 1.1707963
+
+  # true: after clicking Start, use the next VehicleState frame as local origin.
+  # false: use origin_utm_x/origin_utm_y/origin_heading_rad above.
+  use_start_frame_as_origin: true
+
+  # Reference path sampling. Unit: m/s and s.
+  # This only controls the density of the generated reference path.
+  v_ref: 2.0
+  Ts: 0.05
+
+  # sine path
+  turn: "left"
+  L_straight: 24.0
+  L_end: 15.0
+  L_sine: 100.0
+  A: 2.0
+  wave_length: 30.0
+  phase_deg: -90.0
+  zero_start: true
+  dense_num: 10000
+
+  # straight_circle path
+  R: 6.0
+  arc_angle_deg: 270.0
+
+  # double_lane_change path
+  X_start: 0.05
+  X_end: 520.0
+  dX_dense: 0.01
+  shape: 2.4
+  dx1: 25.0
+  dx2: 21.95
+  dy1: 4.05
+  dy2: 5.7
+  Xs1: 55.0
+  Xs2: 110.0
+
+stanley:
+  # Basic Stanley:
+  #   steer = heading_error + atan(k_gain * lateral_error / speed)
+  k_gain: 0.8
+
+  # Only used to avoid division by zero when measured speed is too small.
+  speed_epsilon_mps: 0.5
+
+  # Change to -1.0 if your steering direction is reversed.
+  cross_track_sign: 1.0
+
+  # Final steering clamp. Unit: degree.
+  max_steer_deg: 28.0
+
+  # Sent directly to can_input.cpp in EquivalentSpeedSteer mode.
+  # Unit: cm/s.
+  target_speed_cm_s: 200.0

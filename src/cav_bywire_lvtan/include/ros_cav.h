@@ -50,6 +50,7 @@ public:
     rclcpp::Subscription<can_msgs::msg::Frame>::SharedPtr sub_can_feedback_msg;
     rclcpp::Subscription<cav_msgs::msg::Gpybm>::SharedPtr sub_rtk;
     rclcpp::Publisher<cav_msgs::msg::VehicleState>::SharedPtr pub_vs;
+    rclcpp::Publisher<cav_msgs::msg::VehicleState>::SharedPtr pub_wheel_feedback;
 
     cav_msgs::msg::VehicleState vs_msg;
     std::vector<can_msgs::msg::Frame> can_cmd_msgs;

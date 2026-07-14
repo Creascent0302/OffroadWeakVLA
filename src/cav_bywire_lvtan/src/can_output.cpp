@@ -24,7 +24,11 @@ void ROSNode::decode_can_0X4D1(const std::array<uint8_t, 8UL>& data)
 
     can_output.right_rpm =
         (static_cast<double>(read_u16_le(data, 4)) - 1200.0) * 0.1;
+    // printf("can_output.left_rad = %.2f\n",
+    //                 can_output.left_rpm*2*3.14/60.0);
 
+    // printf("can_output.right_rad = %.2f\n",
+    //                 can_output.right_rpm*2*3.14/60.0);
     can_output.soc = static_cast<double>(read_u16_le(data, 6));
     if (can_output.soc > 100.0)
     {
@@ -35,6 +39,20 @@ void ROSNode::decode_can_0X4D1(const std::array<uint8_t, 8UL>& data)
     }
 
     have_wheel_feedback = true;
+
+    // Publish the same freshly decoded wheel feedback immediately.
+    // The plotting/recording node subscribes to this topic, so feedback
+    // no longer waits for the next RTK/GPS VehicleState publication.
+    if (pub_wheel_feedback)
+    {
+        cav_msgs::msg::VehicleState wheel_msg;
+        wheel_msg.timestamp = this->get_clock()->now().seconds();
+        wheel_msg.left_drive_wheel_rpm = can_output.left_rpm;
+        wheel_msg.right_drive_wheel_rpm = can_output.right_rpm;
+        wheel_msg.left_drive_wheel_speed = can_output.left_rpm * 2.0 * PI / 60.0;
+        wheel_msg.right_drive_wheel_speed = can_output.right_rpm * 2.0 * PI / 60.0;
+        pub_wheel_feedback->publish(wheel_msg);
+    }
 }
 
 void ROSNode::decode_can_0X4D2(const std::array<uint8_t, 8UL>& data)

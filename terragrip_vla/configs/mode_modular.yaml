@@ -1,0 +1,9 @@
+# A: vision -> slip per gear -> (conformal) -> gear.
+# Interpretable, intervenable. The slip head is trained alone; no selection
+# gradient ever reaches it. Language enters ONLY at the selector.
+defaults:
+  - default
+  - _self_
+
+mode: modular
+side_channel_weight: 0.0

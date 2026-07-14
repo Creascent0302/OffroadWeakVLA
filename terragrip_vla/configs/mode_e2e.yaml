@@ -1,0 +1,9 @@
+# B: (vision, language) -> gear. Black box. No physical concept anywhere.
+# Needs the ORACLE best_gear label, which requires counterfactual slip at every
+# gear -- a strictly stronger supervision requirement than modular's.
+defaults:
+  - default
+  - _self_
+
+mode: e2e
+side_channel_weight: 0.0

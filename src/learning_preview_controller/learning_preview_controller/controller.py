@@ -71,7 +71,30 @@ class Learning_preview_controller(
                 self.Nc = int(mpc_cfg.get("Nc", self.Nc))
 
             self.step_count = 0
-            self.g_warmup_steps = 150   # 前10个控制周期不用 g，可以自己改
+            self.g_warmup_steps = 10   # 前10个控制周期不用 g，可以自己改
+
+            # ===== Lateral slope-bias / integral compensation =====
+            # Used by PreviewLQRMixin.CalLateralBiasIntegralCompensation().
+            # Positive lat_bias_yaw_rate means a small north correction in the
+            # current local path coordinate convention.
+            lat_cfg = cfg.get("lateral_integral", {}) or {}
+            self.use_lat_integral = bool(lat_cfg.get("enabled", True))
+            self.lat_bias_yaw_rate = float(lat_cfg.get("bias_yaw_rate", 0.008))
+            self.lat_bias_wheel_limit = float(lat_cfg.get("bias_wheel_limit", 0.08))
+            self.lat_int_initial_value = float(lat_cfg.get("initial_integral", -0.20))
+            self.lat_int_ki = float(lat_cfg.get("ki", 0.03))
+            self.lat_int_limit = float(lat_cfg.get("integral_limit", 1.2))
+            self.lat_int_wheel_limit = float(lat_cfg.get("wheel_correction_limit", 0.18))
+            self.lat_total_wheel_limit = float(lat_cfg.get("total_wheel_correction_limit", 0.22))
+            self.lat_int_deadband = float(lat_cfg.get("error_deadband", 0.005))
+            self.lat_int_kappa_enable = float(lat_cfg.get("curvature_limit", 0.08))
+            self.lat_int_leak = float(lat_cfg.get("leak", 0.9997))
+            self.lat_int_min_speed = float(lat_cfg.get("min_speed", 0.3))
+            self.lat_int_stop_reset_speed = float(lat_cfg.get("stop_reset_speed", 0.12))
+
+            if hasattr(self, "ResetLateralBiasIntegral"):
+                self.ResetLateralBiasIntegral()
+
             if self.Nu != 2:
                 raise ValueError("This controller assumes Nu = 2: [W_l, W_r].")
 
@@ -428,7 +451,8 @@ class Learning_preview_controller(
                 g=g,
                 last_w_l=last_w_l,
                 last_w_r=last_w_r,
-                r=r
+                r=r,
+                u=u
             )
 
             # solve_time_ms = (time.perf_counter() - t0) * 1000.0
@@ -440,14 +464,18 @@ class Learning_preview_controller(
             self.out[1] = g[1, 0]
             self.out[2] = Obserdata[0, 0]
             self.out[3] = Obserdata[1, 0]
-            self.out[4] = self.Au_est
-            self.out[5] = self.Ar_est
-            self.out[6] = self.Bu_est[0, 0]
-            self.out[7] = self.Bu_est[0, 1]
-            self.out[8] = self.Br_est[0, 0]
-            self.out[9] = self.Br_est[0, 1]
-            self.out[10] = self.A[0, 1]
-            self.out[11] = self.A[1, 0]
+            # Save/plot the real-time matrix entries that are actually used
+            # by the controller.  Do not use the legacy *_est helper fields
+            # here because, depending on the selected learning mode, some of
+            # them can remain nominal while self.A/self.B have already changed.
+            self.out[4] = self.A[0, 0]  # A00
+            self.out[5] = self.A[1, 1]  # A11
+            self.out[6] = self.B[0, 0]  # B00
+            self.out[7] = self.B[0, 1]  # B01
+            self.out[8] = self.B[1, 0]  # B10
+            self.out[9] = self.B[1, 1]  # B11
+            self.out[10] = self.A[0, 1]  # A01
+            self.out[11] = self.A[1, 0]  # A10
             self.out[12] = w_l
             self.out[13] = w_r
             self.out[14] = X_r

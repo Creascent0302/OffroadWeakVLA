@@ -10,6 +10,11 @@ ROSNode::ROSNode()
     pub_vs = this->create_publisher<cav_msgs::msg::VehicleState>(
         "/vehicle/vehicle_state", 2);
 
+    // Immediate wheel feedback published directly from CAN 0x4D1.
+    // This avoids waiting for the RTK callback to republish VehicleState.
+    pub_wheel_feedback = this->create_publisher<cav_msgs::msg::VehicleState>(
+        "/vehicle/wheel_feedback", 20);
+
     pub_can_cmd = this->create_publisher<can_msgs::msg::Frame>(
         "/to_can_bus", 2);
 
